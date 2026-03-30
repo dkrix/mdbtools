@@ -732,27 +732,36 @@ mdb_get_relationships(MdbHandle *mdb, const gchar *dbnamespace, const char* tabl
 			fprintf(stderr, "Unable to read columns of MSysRelationships\n");
 			return NULL;
 		}
-		for (i=0;i<5;i++) {
+		for (i=0;i<4;i++) {
 			bound[i] = g_malloc0(mdb->bind_size);
 		}
 		mdb_bind_column_by_name(mdb->relationships_table, "szColumn", bound[0], NULL);
 		mdb_bind_column_by_name(mdb->relationships_table, "szObject", bound[1], NULL);
 		mdb_bind_column_by_name(mdb->relationships_table, "szReferencedColumn", bound[2], NULL);
 		mdb_bind_column_by_name(mdb->relationships_table, "szReferencedObject", bound[3], NULL);
-		mdb_bind_column_by_name(mdb->relationships_table, "grbit", bound[4], NULL);
+		/* grbit is an integer column; cache its MdbColumn pointer in bound[4] for
+		 * direct reading, avoiding a string allocation and atoi() round-trip. */
+		{
+			int grbit_num = mdb_bind_column_by_name(mdb->relationships_table, "grbit", NULL, NULL);
+			bound[4] = (grbit_num > 0)
+				? (char *)g_ptr_array_index(mdb->relationships_table->columns, grbit_num - 1)
+				: NULL;
+		}
 		mdb_rewind_table(mdb->relationships_table);
 	}
     if (mdb->relationships_table->cur_row >= mdb->relationships_table->num_rows) {  /* past the last row */
-        for (i=0;i<5;i++)
+        for (i=0;i<4;i++)
             g_free(bound[i]);
+        bound[4] = NULL;
         mdb->relationships_table = NULL;
         return NULL;
     }
 
 	while (1) {
 		if (!mdb_fetch_row(mdb->relationships_table)) {
-			for (i=0;i<5;i++)
+			for (i=0;i<4;i++)
 				g_free(bound[i]);
+			bound[4] = NULL;
 			mdb->relationships_table = NULL;
 			return NULL;
 		}
@@ -762,7 +771,12 @@ mdb_get_relationships(MdbHandle *mdb, const gchar *dbnamespace, const char* tabl
 
 	quoted_table_1 = mdb->default_backend->quote_schema_name(dbnamespace, bound[1]);
 	quoted_table_2 = mdb->default_backend->quote_schema_name(dbnamespace, bound[3]);
-	grbit = atoi(bound[4]);
+	{
+		/* bound[4] holds the cached MdbColumn pointer for grbit (set during init) */
+		MdbColumn *grbit_col = (MdbColumn *)bound[4];
+		grbit = (grbit_col && grbit_col->cur_value_len) ?
+			mdb_get_int32(mdb->pg_buf, grbit_col->cur_value_start) : 0;
+	}
 	constraint_name = g_strconcat(bound[1], "_", bound[0], "_fk", NULL);
 
 	switch (backend) {
